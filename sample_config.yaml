@@ -1,0 +1,70 @@
+upstream:
+  titer_vg_per_mL:
+    type: lognormal
+    mean: 500000000000.0
+    sd: 100000000000.0
+  volume_L:
+    type: uniform
+    low: 190
+    high: 210
+unit_operations:
+- name: Harvest
+  yield:
+    type: triangular
+    low: 0.8
+    mode: 0.9
+    high: 0.97
+  volume_model:
+    concentration_factor:
+      type: fixed
+      value: 1.0
+    dilution_addition_L:
+      type: fixed
+      value: 0.0
+- name: Clarification
+  yield:
+    type: triangular
+    low: 0.85
+    mode: 0.92
+    high: 0.98
+  volume_model:
+    concentration_factor:
+      type: fixed
+      value: 1.0
+- name: Affinity Chromatography
+  yield:
+    type: triangular
+    low: 0.7
+    mode: 0.85
+    high: 0.92
+  volume_model:
+    concentration_factor:
+      type: uniform
+      low: 2.0
+      high: 4.0
+- name: UF/DF
+  yield:
+    type: triangular
+    low: 0.75
+    mode: 0.88
+    high: 0.95
+  volume_model:
+    concentration_factor:
+      type: uniform
+      low: 5.0
+      high: 12.0
+    dilution_addition_L:
+      type: uniform
+      low: 0.0
+      high: 10.0
+- name: Final Formulation
+  yield:
+    type: triangular
+    low: 0.9
+    mode: 0.96
+    high: 0.99
+  volume_model:
+    target_volume_L_dist:
+      type: uniform
+      low: 4.0
+      high: 6.0
