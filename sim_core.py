@@ -69,7 +69,7 @@ class ProcessConfig:
     unit_operations: List[UnitOperation]
 
 def simulate(config: ProcessConfig, n_iter: int=10000, seed: Optional[int]=42,
-             empirical_inputs: Optional[Dict[str, pd.Series]]=None) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
+             empirical_inputs: Optional[Dict[str, pd.Series]]=None) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame], Dict[str, np.ndarray]]:
     rng = np.random.default_rng(seed)
 
     titer0 = sample_distribution(config.upstream_titer_dist, n_iter, rng, _maybe_empirical(config.upstream_titer_dist, empirical_inputs))
@@ -84,9 +84,12 @@ def simulate(config: ProcessConfig, n_iter: int=10000, seed: Optional[int]=42,
     volume_L = [vol0_L]
     genomes = [genomes0]
 
+    yields_map: Dict[str, np.ndarray] = {"Upstream_Start": np.full(n_iter, np.nan)}
+
     for op in config.unit_operations:
         y = sample_distribution(op.yield_dist, n_iter, rng, _maybe_empirical(op.yield_dist, empirical_inputs))
         y = np.clip(y, 0.0, 1.0)
+        yields_map[op.name] = y
         genomes_i = genomes[-1] * y
 
         vol_in_L = volume_L[-1]
@@ -127,7 +130,7 @@ def simulate(config: ProcessConfig, n_iter: int=10000, seed: Optional[int]=42,
         df = results_long[results_long["step"] == s]
         stats_per_step[s] = _describe(df[["titer_vg_per_mL", "volume_L", "genomes_vg"]])
 
-    return results_long, stats_per_step
+    return results_long, stats_per_step, yields_map
 
 def _maybe_empirical(spec: Dict[str, Any], empirical_inputs: Optional[Dict[str, pd.Series]]) -> Optional[pd.Series]:
     if spec and spec.get("type","").lower() == "empirical":

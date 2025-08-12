@@ -62,8 +62,8 @@ def dist_editor(prefix: str, label: str, default_type: str = "fixed") -> Dict[st
             st.info("Provide a CSV under 'Empirical Inputs' with a column name matching this key.")
             spec["key"] = st.text_input("Empirical column key", key=f"{prefix}_emp_key", value=f"{prefix}_data")
         elif dtype == "beta":
-            spec["alpha"] = cols[0].number_input("Alpha", key=f"{prefix}_beta_a", value=20.0, format="%.6g", min_value=0.001)
-            spec["beta"]  = cols[1].number_input("Beta",  key=f"{prefix}_beta_b", value=5.0, format="%.6g", min_value=0.001)
+            spec["alpha"] = cols[0].number_input("Alpha", key=f"{prefix}_beta_a", value=31.5, format="%.6g", min_value=0.001)
+            spec["beta"]  = cols[1].number_input("Beta",  key=f"{prefix}_beta_b", value=3.5, format="%.6g", min_value=0.001)
         return spec
 
 with st.sidebar:
@@ -88,14 +88,14 @@ if "ops" not in st.session_state:
     st.session_state.ops = []
 if "upstream_cfg" not in st.session_state:
     st.session_state.upstream_cfg = {
-        "titer_vg_per_mL": {"type":"lognormal","mean":5.0e11,"sd":1.0e11},
-        "volume_L": {"type":"uniform","low":190,"high":210, "units":"L"}
+        "titer_vg_per_mL": {"type":"lognormal","mean":2.0e11,"sd":5.0e10},
+        "volume_L": {"type":"fixed","value":450.0, "units":"L"}
     }
 
 def add_op():
     st.session_state.ops.append({
         "name": f"Unit Op {len(st.session_state.ops)+1}",
-        "yield": {"type":"beta","alpha":20,"beta":5},
+        "yield": {"type":"beta","alpha":31.5,"beta":3.5},
         "volume_model": {"concentration_factor":{"type":"fixed","value":1.0}}
     })
 
@@ -202,18 +202,21 @@ except Exception as e:
 run = st.button("Run Simulation", type="primary")
 if run:
     with st.spinner("Simulating..."):
-        results_long, stats_per_step = simulate(proc_cfg, n_iter=int(n_iter), seed=int(seed), empirical_inputs=empirical_inputs)
+        results_long, stats_per_step, yields_map = simulate(proc_cfg, n_iter=int(n_iter), seed=int(seed), empirical_inputs=empirical_inputs)
     st.success("Done!")
 
+    # Downloads (raw numeric)
     csv_buf = io.StringIO(); results_long.to_csv(csv_buf, index=False)
     st.download_button("Download raw samples (CSV)", data=csv_buf.getvalue(), file_name="samples.csv", mime="text/csv")
 
+    # Stats aggregation
     all_stats = []
     for step, df in stats_per_step.items():
         tmp = df.copy(); tmp.insert(0, "step", step)
         all_stats.append(tmp.reset_index().rename(columns={"index":"metric"}))
     stats_table = pd.concat(all_stats, ignore_index=True)
 
+    # Scientific notation for display (titer & genomes)
     def _fmt_sci(x):
         try:
             return f"{float(x):.3e}"
@@ -228,13 +231,14 @@ if run:
     st.subheader("Summary statistics")
     st.dataframe(display_stats, use_container_width=True)
 
+    # ---- Bounds controls ----
     st.markdown("### Chart bounds / regions")
     bound_mode = st.radio(
         "How do you want to define bounds?",
         ["Central %", "± k·SD around mean", "Manual bounds"],
         horizontal=True,
     )
-    central_pct = st.slider("Central percent", 50, 99, 68, step=1, help="E.g., 68% ≈ 1 SD for Normal")
+    central_pct = st.slider("Central percent", 50, 99, 68, step=1)
     k_sd = st.slider("k (SDs)", 0.1, 3.0, 1.0, step=0.1)
     manual_low = st.text_input("Manual lower bound (number, scientific ok, e.g. 1e11)", value="")
     manual_high = st.text_input("Manual upper bound (number, scientific ok, e.g. 9e11)", value="")
@@ -259,53 +263,165 @@ if run:
             except Exception:
                 return (None, None)
 
-    st.subheader("Distributions by step")
-    metrics = ["titer_vg_per_mL", "volume_L", "genomes_vg"]
-    for step in results_long["step"].unique():
-        st.markdown(f"### {step}")
-        df = results_long[results_long["step"] == step].copy()
-        for metric in metrics:
-            st.markdown(f"**{metric}**")
+    # ---- Visualizer Tab ----
+    st.header("Visualizer")
+    metric = st.selectbox("Metric", ["titer_vg_per_mL","volume_L","genomes_vg","yield_frac"], index=0)
+    step = st.selectbox("Step", list(results_long["step"].unique()) + [s for s in yields_map.keys() if s not in set(results_long["step"].unique())])
+    view = st.selectbox("View", ["Histogram+KDE","CDF","Box"], index=0)
 
-            axis_fmt = alt.Axis(format=".2e") if metric in ["titer_vg_per_mL","genomes_vg"] else alt.Axis()
+    # Build series for selected metric/step
+    if metric == "yield_frac":
+        data_series = pd.Series(yields_map.get(step, np.full(len(results_long[results_long['step']==results_long['step'].iloc[0]]), np.nan)))
+    else:
+        data_series = results_long.loc[results_long["step"]==step, metric]
 
-            hist = alt.Chart(df).mark_bar(opacity=0.5).encode(
-                x=alt.X(f"{metric}:Q", bin=alt.Bin(maxbins=50), title=metric, axis=axis_fmt),
-                y=alt.Y('count()', title='count')
+    # Parametric overlay/generator
+    st.subheader("Parametric fit / generator")
+    source_mode = st.radio("Source", ["Fit to simulated output","Generate from parametric family"], horizontal=True)
+    fam = st.selectbox("Family", ["normal","lognormal","gamma","beta"], index=1)
+    n_gen = st.number_input("N samples (for generate)", 1000, 200000, 20000, step=1000)
+
+    # Fit params from data
+    s = data_series.replace([np.inf,-np.inf], np.nan).dropna().to_numpy()
+    fit_params = {}
+    if s.size > 1:
+        m = s.mean(); v = s.var(ddof=1); sd = s.std(ddof=1)
+        if fam == "normal":
+            fit_params = {"mean": float(m), "sd": float(sd)}
+        elif fam == "lognormal":
+            # method of moments in natural space
+            sigma2 = np.log(1 + (v / (m**2))) if m>0 and v>0 else 0.25
+            mu = np.log(m) - 0.5 * sigma2 if m>0 else 0.0
+            fit_params = {"mu_log": float(mu), "sigma_log": float(np.sqrt(sigma2))}
+        elif fam == "gamma":
+            if m>0 and v>0:
+                k = (m**2)/v
+                theta = v/m
+                fit_params = {"k": float(k), "theta": float(theta)}
+        elif fam == "beta":
+            # map data to (0,1) if it's yield; otherwise skip fit
+            xmin, xmax = s.min(), s.max()
+            if (xmin >= 0) and (xmax <= 1) and v>0:
+                tmp = (m*(1-m)/v) - 1
+                if tmp > 0:
+                    a = m*tmp; b = (1-m)*tmp
+                    fit_params = {"alpha": float(a), "beta": float(b)}
+
+    # Manual parameter inputs (with fitted defaults if available)
+    st.caption("Parameters")
+    if fam == "normal":
+        p_mean = st.number_input("mean", value=float(fit_params.get("mean", 0.0)))
+        p_sd   = st.number_input("sd", value=float(fit_params.get("sd", 1.0)), min_value=1e-12, format="%.6g")
+    elif fam == "lognormal":
+        p_mu = st.number_input("mu_log", value=float(fit_params.get("mu_log", 0.0)))
+        p_sigma = st.number_input("sigma_log", value=float(fit_params.get("sigma_log", 0.25)), min_value=1e-12, format="%.6g")
+    elif fam == "gamma":
+        p_k = st.number_input("k (shape)", value=float(fit_params.get("k", 2.0)), min_value=1e-12, format="%.6g")
+        p_theta = st.number_input("theta (scale)", value=float(fit_params.get("theta", 1.0)), min_value=1e-12, format="%.6g")
+    elif fam == "beta":
+        p_a = st.number_input("alpha", value=float(fit_params.get("alpha", 2.0)), min_value=1e-6, format="%.6g")
+        p_b = st.number_input("beta", value=float(fit_params.get("beta", 2.0)), min_value=1e-6, format="%.6g")
+
+    # Generate samples if needed
+    gen_samples = None
+    rng = np.random.default_rng(123)
+    if source_mode == "Generate from parametric family":
+        if fam == "normal":
+            gen_samples = rng.normal(p_mean, p_sd, size=int(n_gen))
+        elif fam == "lognormal":
+            gen_samples = rng.lognormal(p_mu, p_sigma, size=int(n_gen))
+        elif fam == "gamma":
+            gen_samples = rng.gamma(shape=p_k, scale=p_theta, size=int(n_gen))
+        elif fam == "beta":
+            gen_samples = rng.beta(p_a, p_b, size=int(n_gen))
+
+    # Helper for bounds
+    def get_bounds(arr):
+        if arr is None:
+            return (None, None)
+        arr = np.asarray(arr)
+        if arr.size == 0:
+            return (None, None)
+        if bound_mode == "Central %":
+            alpha = (100 - central_pct) / 2
+            return np.percentile(arr, alpha), np.percentile(arr, 100 - alpha)
+        elif bound_mode == "± k·SD around mean":
+            mu = arr.mean(); sd = arr.std(ddof=1) if arr.size > 1 else 0.0
+            return mu - k_sd*sd, mu + k_sd*sd
+        else:
+            try:
+                lo = float(eval(manual_low)) if manual_low.strip() else None
+                hi = float(eval(manual_high)) if manual_high.strip() else None
+                return lo, hi
+            except Exception:
+                return (None, None)
+
+    # Build a dataframe for visualization
+    df_vis = pd.DataFrame({"value": s})
+    if gen_samples is not None:
+        df_gen = pd.DataFrame({"value": gen_samples})
+    else:
+        df_gen = None
+
+    # Plot
+    axis_fmt = alt.Axis(format=".2e") if metric in ["titer_vg_per_mL","genomes_vg"] else alt.Axis()
+
+    if view == "Histogram+KDE":
+        hist = alt.Chart(df_vis).mark_bar(opacity=0.5).encode(
+            x=alt.X("value:Q", bin=alt.Bin(maxbins=50), axis=axis_fmt, title=metric),
+            y=alt.Y("count()", title="count"),
+        )
+        kde = alt.Chart(df_vis).transform_density(
+            "value", as_=["value","density"]
+        ).mark_area(opacity=0.4).encode(
+            x=alt.X("value:Q", axis=axis_fmt, title=metric),
+            y="density:Q"
+        )
+        layers = [hist, kde]
+
+        # Overlay generated KDE if present
+        if df_gen is not None:
+            kde2 = alt.Chart(df_gen).transform_density(
+                "value", as_=["value","density"]
+            ).mark_line().encode(
+                x=alt.X("value:Q", axis=axis_fmt),
+                y="density:Q"
             )
+            layers.append(kde2)
 
-            kde = alt.Chart(df).transform_density(
-                metric, as_=[metric, 'density'],
-            ).mark_area(opacity=0.4).encode(
-                x=alt.X(f"{metric}:Q", title=metric, axis=axis_fmt),
-                y='density:Q'
-            )
+        # Bounds
+        lo, hi = get_bounds(s)
+        if lo is not None:
+            layers.append(alt.Chart(pd.DataFrame({"x":[lo]})).mark_rule(strokeDash=[4,4]).encode(x="x:Q"))
+        if hi is not None:
+            layers.append(alt.Chart(pd.DataFrame({"x":[hi]})).mark_rule(strokeDash=[4,4]).encode(x="x:Q"))
+        if (lo is not None) and (hi is not None) and (hi > lo):
+            layers.append(alt.Chart(pd.DataFrame({"x":[lo], "x2":[hi]})).mark_rect(opacity=0.08).encode(x="x:Q", x2="x2:Q"))
 
-            mean_val = float(df[metric].mean())
-            mean_rule = alt.Chart(pd.DataFrame({"x":[mean_val]})).mark_rule().encode(x='x:Q')
+        st.altair_chart(alt.layer(*layers).resolve_scale(y='independent'), use_container_width=True)
 
-            lo, hi = _compute_bounds(df[metric])
-            layers = [hist, kde, mean_rule]
-            if lo is not None:
-                lo_rule = alt.Chart(pd.DataFrame({"x":[lo]})).mark_rule(strokeDash=[4,4]).encode(x='x:Q')
-                layers.append(lo_rule)
-            if hi is not None:
-                hi_rule = alt.Chart(pd.DataFrame({"x":[hi]})).mark_rule(strokeDash=[4,4]).encode(x='x:Q')
-                layers.append(hi_rule)
-            if (lo is not None) and (hi is not None) and (hi > lo):
-                band = alt.Chart(pd.DataFrame({"x":[lo], "x2":[hi]})).mark_rect(opacity=0.08).encode(
-                    x='x:Q', x2='x2:Q'
-                )
-                layers.append(band)
+    elif view == "CDF":
+        # Empirical CDF
+        xs = np.sort(s)
+        ys = np.arange(1, len(xs)+1)/len(xs) if len(xs)>0 else np.array([])
+        df_cdf = pd.DataFrame({"x": xs, "F": ys})
+        chart = alt.Chart(df_cdf).mark_line().encode(
+            x=alt.X("x:Q", axis=axis_fmt, title=metric),
+            y=alt.Y("F:Q", title="CDF")
+        )
+        st.altair_chart(chart, use_container_width=True)
 
-            st.altair_chart(alt.layer(*layers).resolve_scale(y='independent'), use_container_width=True)
+    else:  # Box
+        df_box = pd.DataFrame({"metric":[metric]*len(s), "value": s})
+        chart = alt.Chart(df_box).mark_boxplot().encode(
+            x=alt.X("metric:N", title=""),
+            y=alt.Y("value:Q", axis=axis_fmt, title=metric)
+        )
+        st.altair_chart(chart, use_container_width=True)
 
-            to_sci = (lambda v: f"{v:.3e}") if metric in ["titer_vg_per_mL","genomes_vg"] else (lambda v: f"{v:.3g}")
-            st.caption(f"mean = {to_sci(mean_val)}  |  bounds: [{to_sci(lo) if lo is not None else '—'}, {to_sci(hi) if hi is not None else '—'}]")
+    # Download generated samples if any
+    if df_gen is not None:
+        buf = io.StringIO(); df_gen.to_csv(buf, index=False)
+        st.download_button("Download generated samples (CSV)", buf.getvalue(), file_name="generated_samples.csv", mime="text/csv")
 
-    st.subheader("Compounding relationship")
-    st.markdown("""
-- **Total_vg_A = Titer_A × Volume_A**  
-- **Total_vg_B = Yield_B × Total_vg_A**  
-- After volume changes at B: **Titer_B = Total_vg_B / Volume_B**
-""")
+    st.caption(f"Step: {step}  |  Metric: {metric}  |  View: {view}")
