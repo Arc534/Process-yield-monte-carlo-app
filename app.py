@@ -355,6 +355,8 @@ if results_long is not None and stats_per_step is not None:
     metric = st.selectbox("Metric", ["titer_vg_per_mL","volume_L","genomes_vg","yield_frac"], index=0, key="vis_metric")
     log_x = st.checkbox("Log scale (x-axis)", value=(metric in ["titer_vg_per_mL","genomes_vg"]), key="log_x")
     show_kde = st.checkbox("Show KDE overlay", value=True, key="show_kde")
+    show_sigma = st.checkbox("Show sigma guides (±1σ/2σ/3σ)", value=True, key="show_sigma")
+    sigma_style = st.radio("Guides style", ["Shaded bands","Lines"], index=0, horizontal=True, key="sigma_style")
 
     steps_available = list(results_long["step"].unique())
     if metric == "yield_frac":
@@ -373,13 +375,45 @@ if results_long is not None and stats_per_step is not None:
     if s.size < 1:
         st.warning("No data to plot for this selection."); st.stop()
 
-    # X-axis formatting
+    # Stats
+    mean_val = float(series.mean())
+    sd_val = float(series.std(ddof=1)) if len(series) > 1 else 0.0
+    med_val = float(series.median())
+    p5_val = float(series.quantile(0.05))
+    p95_val = float(series.quantile(0.95))
+    n_val = int(series.count())
+
+    # Format helpers
+    def fmt(v):
+        if metric in ["titer_vg_per_mL","genomes_vg"]:
+            try: return f"{float(v):.3e}"
+            except: return str(v)
+        else:
+            try: return f"{float(v):.4g}"
+            except: return str(v)
+
+    # Sigma lines dataframe
+    sigma_df = pd.DataFrame({
+        "x":[mean_val - sd_val, mean_val + sd_val,
+             mean_val - 2*sd_val, mean_val + 2*sd_val,
+             mean_val - 3*sd_val, mean_val + 3*sd_val],
+        "k":[1,1,2,2,3,3]
+    })
+    # Keep only finite and within data bounds to avoid log-scale issues
+    xmin, xmax = float(np.min(s)), float(np.max(s))
+    sigma_df = sigma_df.replace([np.inf,-np.inf], np.nan).dropna()
+    sigma_df = sigma_df[(sigma_df["x"] > 0.0) | (~(st.session_state.get("log_x") and (metric in ["titer_vg_per_mL","genomes_vg","volume_L"])))]
+
+    # Common axis/scale
     axis = alt.Axis(format=".2e") if metric in ["titer_vg_per_mL","genomes_vg"] else alt.Axis()
     xscale = alt.Scale(type="log") if st.session_state.get("log_x") else alt.Scale()
 
+    # Title with stats (displayed on chart)
+    title_text = f"n={n_val} • mean={fmt(mean_val)} • sd={fmt(sd_val)} • median={fmt(med_val)} • p5={fmt(p5_val)} • p95={fmt(p95_val)}"
+
     if st.session_state["vis_view"] == "Histogram+KDE":
         df = pd.DataFrame({"value": s})
-        hist = alt.Chart(df).mark_bar(opacity=0.5).encode(
+        hist = alt.Chart(df, title=title_text).mark_bar(opacity=0.5).encode(
             x=alt.X("value:Q", bin=alt.Bin(maxbins=50), axis=axis, scale=xscale, title=metric),
             y=alt.Y("count()", title="count")
         ).properties(height=280)
@@ -390,12 +424,13 @@ if results_long is not None and stats_per_step is not None:
             extent = [float(np.min(s)), float(np.max(s))]
             kde = alt.Chart(df).transform_density(
                 "value", as_=["value","density"], extent=extent
-            ).mark_line().encode(
+            ).mark_line(opacity=0.6).encode(
                 x=alt.X("value:Q", axis=axis, scale=xscale, title=metric),
                 y="density:Q"
             )
             layers.append(kde)
 
+        # Bounds (from earlier controls)
         lo, hi = _compute_bounds(series)
         if lo is not None:
             layers.append(alt.Chart(pd.DataFrame({"x":[lo]})).mark_rule(strokeDash=[4,4]).encode(x=alt.X("x:Q", scale=xscale)))
@@ -404,24 +439,113 @@ if results_long is not None and stats_per_step is not None:
         if (lo is not None) and (hi is not None) and (hi > lo):
             layers.append(alt.Chart(pd.DataFrame({"x":[lo], "x2":[hi]})).mark_rect(opacity=0.08).encode(x=alt.X("x:Q", scale=xscale), x2="x2:Q"))
 
+        # Mean line (dark) and sigma guides (lines or shaded bands)
+        mean_rule = alt.Chart(pd.DataFrame({"x":[mean_val]})).mark_rule(color="black", strokeWidth=1.5, strokeOpacity=0.6).encode(x=alt.X("x:Q", scale=xscale))
+        layers.append(mean_rule)
+
+        if show_sigma and sd_val > 0:
+            if sigma_style == "Lines":
+                if not sigma_df.empty:
+                    sigma_rules = alt.Chart(sigma_df).mark_rule(color="red", strokeOpacity=0.35).encode(
+                        x=alt.X("x:Q", scale=xscale),
+                        detail="k:N"
+                    )
+                    layers.append(sigma_rules)
+            else:
+                # Shaded bands for ±1σ / ±2σ / ±3σ
+                band_rows = []
+                for k in (1,2,3):
+                    lo = mean_val - k*sd_val
+                    hi = mean_val + k*sd_val
+                    # clip to data range; if log-scale, avoid nonpositive
+                    if st.session_state.get("log_x"):
+                        lo = max(lo, xmin if xmin>0 else np.nextafter(0, 1))
+                        hi = max(hi, lo)
+                    lo = max(lo, xmin)
+                    hi = min(hi, xmax)
+                    if hi > lo:
+                        band_rows.append({"x": lo, "x2": hi, "k": k})
+                if band_rows:
+                    band_df = pd.DataFrame(band_rows)
+                    # lighter opacity for wider bands
+                    opacity_map = {1:0.15, 2:0.10, 3:0.07}
+                    bands = []
+                    for k in (3,2,1):  # draw widest first
+                        sub = band_df[band_df["k"]==k]
+                        if not sub.empty:
+                            bands.append(
+                                alt.Chart(sub).mark_rect(color="red", opacity=opacity_map[k]).encode(
+                                    x=alt.X("x:Q", scale=xscale), x2="x2:Q"
+                                )
+                            )
+                    layers.extend(bands)
+
         st.altair_chart(alt.layer(*layers).resolve_scale(y='independent'), use_container_width=True)
 
     elif st.session_state["vis_view"] == "CDF":
         xs = np.sort(s)
         ys = np.arange(1, len(xs)+1)/len(xs) if len(xs)>0 else np.array([])
-        chart = alt.Chart(pd.DataFrame({"x": xs, "F": ys})).mark_line().encode(
+        base_chart = alt.Chart(pd.DataFrame({"x": xs, "F": ys}), title=title_text).mark_line().encode(
             x=alt.X("x:Q", axis=axis, scale=xscale, title=metric),
             y=alt.Y("F:Q", title="CDF")
         ).properties(height=280)
-        st.altair_chart(chart, use_container_width=True)
 
-    else:
-        chart = alt.Chart(pd.DataFrame({"metric":[metric]*len(s), "value": s})).mark_boxplot().encode(
+        layers = [base_chart]
+
+        # Mean & sigma guides
+        mean_rule = alt.Chart(pd.DataFrame({"x":[mean_val]})).mark_rule(color="black", strokeWidth=1.5, strokeOpacity=0.6).encode(x=alt.X("x:Q", scale=xscale))
+        layers.append(mean_rule)
+
+        if show_sigma and sd_val > 0:
+            if sigma_style == "Lines":
+                if not sigma_df.empty:
+                    sigma_rules = alt.Chart(sigma_df).mark_rule(color="red", strokeOpacity=0.35).encode(
+                        x=alt.X("x:Q", scale=xscale),
+                        detail="k:N"
+                    )
+                    layers.append(sigma_rules)
+            else:
+                # Shaded bands on CDF (vertical regions)
+                band_rows = []
+                for k in (1,2,3):
+                    lo = mean_val - k*sd_val
+                    hi = mean_val + k*sd_val
+                    if st.session_state.get("log_x"):
+                        lo = max(lo, xmin if xmin>0 else np.nextafter(0, 1))
+                        hi = max(hi, lo)
+                    lo = max(lo, xmin)
+                    hi = min(hi, xmax)
+                    if hi > lo:
+                        band_rows.append({"x": lo, "x2": hi, "k": k})
+                if band_rows:
+                    band_df = pd.DataFrame(band_rows)
+                    opacity_map = {1:0.15, 2:0.10, 3:0.07}
+                    bands = []
+                    for k in (3,2,1):
+                        sub = band_df[band_df["k"]==k]
+                        if not sub.empty:
+                            bands.append(
+                                alt.Chart(sub).mark_rect(color="red", opacity=opacity_map[k]).encode(
+                                    x=alt.X("x:Q", scale=xscale), x2="x2:Q"
+                                )
+                            )
+                    layers.extend(bands)
+
+        st.altair_chart(alt.layer(*layers), use_container_width=True)
+
+    else:  # Box
+        base = alt.Chart(pd.DataFrame({"metric":[metric]*len(s), "value": s}), title=title_text).mark_boxplot().encode(
             x=alt.X("metric:N", title=""),
             y=alt.Y("value:Q", axis=axis, scale=xscale, title=metric)
         ).properties(height=280)
-        st.altair_chart(chart, use_container_width=True)
+
+        # Mean & sigma lines as vertical rules may not align with boxplot's categorical x,
+        # so instead place them as horizontal overlays isn't appropriate. We'll add a mean point.
+        mean_point = alt.Chart(pd.DataFrame({"metric":[metric], "value":[mean_val]})).mark_point(color="black", opacity=0.8).encode(
+            x=alt.X("metric:N"),
+            y=alt.Y("value:Q", scale=xscale)
+        )
+
+        st.altair_chart(alt.layer(base, mean_point), use_container_width=True)
 
     st.caption(f"Step: {step}  |  Metric: {metric}  |  View: {st.session_state['vis_view']}  |  n={len(s):,}")
-else:
-    st.info("No results yet. Configure your process and click **Run Simulation**. Results will persist while you explore visuals.")
