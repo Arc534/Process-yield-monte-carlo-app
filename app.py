@@ -11,8 +11,8 @@ import yaml
 
 from sim_core import ProcessConfig, UnitOperation, VolumeModel, simulate
 
-st.set_page_config(page_title="AAV Monte Carlo Simulator", layout="wide")
-st.title("AAV Monte Carlo Simulator")
+st.set_page_config(page_title="Monte Carlo Simulator for AAV Process", layout="wide")
+st.title("Monte Carlo Simulator for AAV Process")
 
 # --- Simple password gate ---
 def _check_password():
