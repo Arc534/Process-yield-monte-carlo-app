@@ -1,4 +1,3 @@
-
 import json
 import io
 from typing import Dict, Any
@@ -12,7 +11,7 @@ import yaml
 from sim_core import ProcessConfig, UnitOperation, VolumeModel, simulate
 
 st.set_page_config(page_title="Monte Carlo Simulator for AAV Process your mother", layout="wide")
-st.title("Monte Carlo Simulator for AAV Process")
+st.title("Monte Carlo Simulator for AAV Process your mother")
 
 # --- Simple password gate ---
 def _check_password():
