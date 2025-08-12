@@ -37,7 +37,6 @@ def _num(spec, key, default):
         return default
 
 def dist_editor(prefix: str, label: str, existing: Dict[str, Any] | None = None, default_type: str = "fixed") -> Dict[str, Any]:
-    """Distribution editor that PREFILLS from existing spec."""
     spec_in = existing or {}
     with st.container(border=True):
         st.caption(label)
@@ -96,8 +95,8 @@ def dist_editor(prefix: str, label: str, existing: Dict[str, Any] | None = None,
 
 with st.sidebar:
     st.header("Simulation Settings")
-    n_iter = st.number_input("Iterations", min_value=100, max_value=500000, value=20000, step=1000)
-    seed = st.number_input("Random Seed", min_value=0, max_value=10_000_000, value=42, step=1)
+    st.session_state["n_iter"] = st.number_input("Iterations", min_value=100, max_value=500000, value=int(st.session_state.get("n_iter", 20000)), step=1000)
+    st.session_state["seed"] = st.number_input("Random Seed", min_value=0, max_value=10_000_000, value=int(st.session_state.get("seed", 42)), step=1)
 
     st.divider()
     st.subheader("Empirical Inputs (optional)")
@@ -120,7 +119,6 @@ if "upstream_cfg" not in st.session_state:
         "titer_vg_per_mL": {"type":"lognormal","mean":2.0e11,"sd":5.0e10},
         "volume_L": {"type":"fixed","value":450.0, "units":"L"}
     }
-# result holders
 for k in ("results_long","stats_per_step","yields_map"):
     st.session_state.setdefault(k, None)
 
@@ -205,9 +203,7 @@ if mode == "Builder (no file)":
 
             op["volume_model"] = vm
 
-    cfg_dict = to_config_dict()
-    with st.expander("Show current config JSON"):
-        st.code(json.dumps(cfg_dict, indent=2))
+    # (Removed the 'Show current config JSON' expander per your request)
 
 else:
     st.subheader("Upload a YAML/JSON config")
@@ -221,7 +217,6 @@ else:
                 cfg_dict = yaml.safe_load(content)
             else:
                 cfg_dict = json.loads(content)
-            # Load into session-state to EDIT after upload
             st.session_state.upstream_cfg = cfg_dict["upstream"]
             st.session_state.ops = cfg_dict["unit_operations"]
             st.success("Config loaded into Builder. You can tweak and run.")
@@ -240,8 +235,6 @@ if clear_clicked:
 
 if run_clicked:
     try:
-        proc_cfg = _build_config = None
-        # Build ProcessConfig from current session config
         upstream_titer = st.session_state.upstream_cfg["titer_vg_per_mL"]
         upstream_vol = st.session_state.upstream_cfg["volume_L"]
         ops_objs = []
@@ -257,8 +250,8 @@ if run_clicked:
         proc_cfg = ProcessConfig(upstream_titer_dist=upstream_titer, upstream_volume_L_dist=upstream_vol, unit_operations=ops_objs)
 
         with st.spinner("Simulating..."):
-            results_long, stats_per_step, yields_map = simulate(proc_cfg, n_iter=int(st.session_state.get("n_iter", 20000) or 20000),
-                                                                seed=int(st.session_state.get("seed", 42) or 42),
+            results_long, stats_per_step, yields_map = simulate(proc_cfg, n_iter=int(st.session_state.get("n_iter", 20000)),
+                                                                seed=int(st.session_state.get("seed", 42)),
                                                                 empirical_inputs=None)
         st.session_state["results_long"] = results_long
         st.session_state["stats_per_step"] = stats_per_step
@@ -267,24 +260,22 @@ if run_clicked:
     except Exception as e:
         st.error(f"Simulation error: {e}")
 
-# Use cached results if present
 results_long = st.session_state.get("results_long")
 stats_per_step = st.session_state.get("stats_per_step")
 yields_map = st.session_state.get("yields_map")
 
 if results_long is not None and stats_per_step is not None:
-    # Downloads (raw numeric)
+    # Downloads
     csv_buf = io.StringIO(); results_long.to_csv(csv_buf, index=False)
     st.download_button("Download raw samples (CSV)", data=csv_buf.getvalue(), file_name="samples.csv", mime="text/csv")
 
-    # Stats aggregation
+    # Stats table
     all_stats = []
     for step, df in stats_per_step.items():
         tmp = df.copy(); tmp.insert(0, "step", step)
         all_stats.append(tmp.reset_index().rename(columns={"index":"metric"}))
     stats_table = pd.concat(all_stats, ignore_index=True)
 
-    # Scientific notation for display (titer & genomes)
     def _fmt_sci(x):
         try:
             return f"{float(x):.3e}"
@@ -301,47 +292,45 @@ if results_long is not None and stats_per_step is not None:
 
     # ---- Bounds controls ----
     st.markdown("### Chart bounds / regions")
-    bound_mode = st.radio(
-        "How do you want to define bounds?",
-        ["Central %", "± k·SD around mean", "Manual bounds"],
-        horizontal=True,
-        key="bounds_mode"
-    )
-    central_pct = st.slider("Central percent", 50, 99, 68, step=1, key="central_pct")
-    k_sd = st.slider("k (SDs)", 0.1, 3.0, 1.0, step=0.1, key="k_sd")
-    manual_low = st.text_input("Manual lower bound (number, scientific ok, e.g. 1e11)", value="", key="manual_low")
-    manual_high = st.text_input("Manual upper bound (number, scientific ok, e.g. 9e11)", value="", key="manual_high")
+    bound_mode = st.radio("How do you want to define bounds?",
+                          ["Central %", "± k·SD around mean", "Manual bounds"],
+                          horizontal=True, key="bounds_mode")
+    central_pct = st.slider("Central percent", 50, 99, int(st.session_state.get("central_pct", 68)), step=1, key="central_pct")
+    k_sd = st.slider("k (SDs)", 0.1, 3.0, float(st.session_state.get("k_sd", 1.0)), step=0.1, key="k_sd")
+    manual_low = st.text_input("Manual lower bound (number, scientific ok, e.g. 1e11)",
+                               value=st.session_state.get("manual_low",""), key="manual_low")
+    manual_high = st.text_input("Manual upper bound (number, scientific ok, e.g. 9e11)",
+                                value=st.session_state.get("manual_high",""), key="manual_high")
 
     def _parse_float(s):
         try:
             return float(s)
         except Exception:
             return None
-
     def _compute_bounds(series: pd.Series):
         s = series.replace([np.inf, -np.inf], np.nan).dropna().to_numpy()
         if s.size == 0:
             return (None, None)
         if st.session_state["bounds_mode"] == "Central %":
             alpha = (100 - st.session_state["central_pct"]) / 2
-            lo = float(np.percentile(s, alpha))
-            hi = float(np.percentile(s, 100 - alpha))
+            lo = float(np.percentile(s, alpha)); hi = float(np.percentile(s, 100 - alpha))
             return lo, hi
         elif st.session_state["bounds_mode"] == "± k·SD around mean":
             m = float(np.mean(s)); sd = float(np.std(s, ddof=1)) if s.size > 1 else 0.0
             return m - st.session_state["k_sd"]*sd, m + st.session_state["k_sd"]*sd
         else:
-            lo = _parse_float(st.session_state["manual_low"])
-            hi = _parse_float(st.session_state["manual_high"])
+            lo = _parse_float(st.session_state["manual_low"]); hi = _parse_float(st.session_state["manual_high"])
             return lo, hi
 
     # ---- Visualizer ----
     st.header("Visualizer")
+    st.caption("Tip: results persist after a run — tweak views without re-running.")
     metric = st.selectbox("Metric", ["titer_vg_per_mL","volume_L","genomes_vg","yield_frac"], index=0, key="vis_metric")
+    log_x = st.checkbox("Log scale (x-axis)", value=(metric in ["titer_vg_per_mL","genomes_vg"]), key="log_x")
+    show_kde = st.checkbox("Show KDE overlay", value=True, key="show_kde")
 
     steps_available = list(results_long["step"].unique())
     if metric == "yield_frac":
-        # exclude Upstream_Start (no yield)
         steps_for_yield = [s for s in st.session_state["yields_map"].keys() if s != "Upstream_Start"]
         step = st.selectbox("Step", steps_for_yield, key="vis_step")
         data_series = pd.Series(st.session_state["yields_map"][step])
@@ -351,48 +340,61 @@ if results_long is not None and stats_per_step is not None:
 
     view = st.selectbox("View", ["Histogram+KDE","CDF","Box"], index=0, key="vis_view")
 
-    s = data_series.replace([np.inf,-np.inf], np.nan).dropna().to_numpy()
+    series = data_series.replace([np.inf,-np.inf], np.nan).dropna()
+    s = series.to_numpy()
 
-    axis_fmt = alt.Axis(format=".2e") if metric in ["titer_vg_per_mL","genomes_vg"] else alt.Axis()
+    if s.size < 1:
+        st.warning("No data to plot for this selection."); st.stop()
+
+    # X-axis formatting
+    axis = alt.Axis(format=".2e") if metric in ["titer_vg_per_mL","genomes_vg"] else alt.Axis()
+    xscale = alt.Scale(type="log") if st.session_state.get("log_x") else alt.Scale()
 
     if st.session_state["vis_view"] == "Histogram+KDE":
-        hist = alt.Chart(pd.DataFrame({"value": s})).mark_bar(opacity=0.5).encode(
-            x=alt.X("value:Q", bin=alt.Bin(maxbins=50), axis=axis_fmt, title=metric),
+        df = pd.DataFrame({"value": s})
+        hist = alt.Chart(df).mark_bar(opacity=0.5).encode(
+            x=alt.X("value:Q", bin=alt.Bin(maxbins=50), axis=axis, scale=xscale, title=metric),
             y=alt.Y("count()", title="count")
-        )
-        kde = alt.Chart(pd.DataFrame({"value": s})).transform_density(
-            "value", as_=["value","density"]
-        ).mark_area(opacity=0.4).encode(
-            x=alt.X("value:Q", axis=axis_fmt, title=metric),
-            y="density:Q"
-        )
-        lo, hi = _compute_bounds(pd.Series(s))
-        layers = [hist, kde]
+        ).properties(height=280)
+
+        layers = [hist]
+
+        if st.session_state.get("show_kde") and s.size >= 2 and (np.max(s) > np.min(s)):
+            extent = [float(np.min(s)), float(np.max(s))]
+            kde = alt.Chart(df).transform_density(
+                "value", as_=["value","density"], extent=extent
+            ).mark_line().encode(
+                x=alt.X("value:Q", axis=axis, scale=xscale, title=metric),
+                y="density:Q"
+            )
+            layers.append(kde)
+
+        lo, hi = _compute_bounds(series)
         if lo is not None:
-            layers.append(alt.Chart(pd.DataFrame({"x":[lo]})).mark_rule(strokeDash=[4,4]).encode(x="x:Q"))
+            layers.append(alt.Chart(pd.DataFrame({"x":[lo]})).mark_rule(strokeDash=[4,4]).encode(x=alt.X("x:Q", scale=xscale)))
         if hi is not None:
-            layers.append(alt.Chart(pd.DataFrame({"x":[hi]})).mark_rule(strokeDash=[4,4]).encode(x="x:Q"))
+            layers.append(alt.Chart(pd.DataFrame({"x":[hi]})).mark_rule(strokeDash=[4,4]).encode(x=alt.X("x:Q", scale=xscale)))
         if (lo is not None) and (hi is not None) and (hi > lo):
-            layers.append(alt.Chart(pd.DataFrame({"x":[lo], "x2":[hi]})).mark_rect(opacity=0.08).encode(x="x:Q", x2="x2:Q"))
+            layers.append(alt.Chart(pd.DataFrame({"x":[lo], "x2":[hi]})).mark_rect(opacity=0.08).encode(x=alt.X("x:Q", scale=xscale), x2="x2:Q"))
+
         st.altair_chart(alt.layer(*layers).resolve_scale(y='independent'), use_container_width=True)
 
     elif st.session_state["vis_view"] == "CDF":
         xs = np.sort(s)
         ys = np.arange(1, len(xs)+1)/len(xs) if len(xs)>0 else np.array([])
         chart = alt.Chart(pd.DataFrame({"x": xs, "F": ys})).mark_line().encode(
-            x=alt.X("x:Q", axis=axis_fmt, title=metric),
+            x=alt.X("x:Q", axis=axis, scale=xscale, title=metric),
             y=alt.Y("F:Q", title="CDF")
-        )
+        ).properties(height=280)
         st.altair_chart(chart, use_container_width=True)
 
     else:
         chart = alt.Chart(pd.DataFrame({"metric":[metric]*len(s), "value": s})).mark_boxplot().encode(
             x=alt.X("metric:N", title=""),
-            y=alt.Y("value:Q", axis=axis_fmt, title=metric)
-        )
+            y=alt.Y("value:Q", axis=axis, scale=xscale, title=metric)
+        ).properties(height=280)
         st.altair_chart(chart, use_container_width=True)
 
-    st.caption(f"Step: {step}  |  Metric: {metric}  |  View: {st.session_state['vis_view']}")
-
+    st.caption(f"Step: {step}  |  Metric: {metric}  |  View: {st.session_state['vis_view']}  |  n={len(s):,}")
 else:
     st.info("No results yet. Configure your process and click **Run Simulation**. Results will persist while you explore visuals.")
