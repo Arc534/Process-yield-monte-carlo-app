@@ -22,21 +22,20 @@ def _check_password():
         else:
             st.session_state["pwd_ok"] = False
             st.error("Incorrect password")
-
     if st.session_state.get("pwd_ok"):
         return True
-
     st.text_input("Password", type="password", key="password", on_change=password_entered)
     st.stop()
-
 _check_password()
 # --- End password gate ---
 
 def dist_editor(prefix: str, label: str, default_type: str = "fixed") -> Dict[str, Any]:
     with st.container(border=True):
         st.caption(label)
-        dtype = st.selectbox(f"{label} — distribution type", ["fixed","normal","lognormal","uniform","triangular","empirical"],
-                             key=f"{prefix}_dtype", index=["fixed","normal","lognormal","uniform","triangular","empirical"].index(default_type) if default_type in ["fixed","normal","lognormal","uniform","triangular","empirical"] else 0)
+        opts = ["fixed","normal","lognormal","uniform","triangular","empirical","beta"]
+        dtype = st.selectbox(f"{label} — distribution type", opts,
+                             key=f"{prefix}_dtype",
+                             index=opts.index(default_type) if default_type in opts else 0)
         spec: Dict[str, Any] = {"type": dtype}
         cols = st.columns(3)
         if dtype == "fixed":
@@ -62,6 +61,9 @@ def dist_editor(prefix: str, label: str, default_type: str = "fixed") -> Dict[st
         elif dtype == "empirical":
             st.info("Provide a CSV under 'Empirical Inputs' with a column name matching this key.")
             spec["key"] = st.text_input("Empirical column key", key=f"{prefix}_emp_key", value=f"{prefix}_data")
+        elif dtype == "beta":
+            spec["alpha"] = cols[0].number_input("Alpha", key=f"{prefix}_beta_a", value=20.0, format="%.6g", min_value=0.001)
+            spec["beta"]  = cols[1].number_input("Beta",  key=f"{prefix}_beta_b", value=5.0, format="%.6g", min_value=0.001)
         return spec
 
 with st.sidebar:
@@ -87,13 +89,13 @@ if "ops" not in st.session_state:
 if "upstream_cfg" not in st.session_state:
     st.session_state.upstream_cfg = {
         "titer_vg_per_mL": {"type":"lognormal","mean":5.0e11,"sd":1.0e11},
-        "volume_L": {"type":"uniform","low":190,"high":210}
+        "volume_L": {"type":"uniform","low":190,"high":210, "units":"L"}
     }
 
 def add_op():
     st.session_state.ops.append({
         "name": f"Unit Op {len(st.session_state.ops)+1}",
-        "yield": {"type":"triangular","low":0.85,"mode":0.92,"high":0.98},
+        "yield": {"type":"beta","alpha":20,"beta":5},
         "volume_model": {"concentration_factor":{"type":"fixed","value":1.0}}
     })
 
@@ -112,8 +114,10 @@ if mode == "Builder (no file)":
             st.markdown("**Upstream titer (vg/mL)**")
             st.session_state.upstream_cfg["titer_vg_per_mL"] = dist_editor("up_titer","Upstream titer", default_type=st.session_state.upstream_cfg["titer_vg_per_mL"]["type"])
         with cols[1]:
-            st.markdown("**Upstream volume (L)**")
+            st.markdown("**Upstream volume**")
             st.session_state.upstream_cfg["volume_L"] = dist_editor("up_vol","Upstream volume", default_type=st.session_state.upstream_cfg["volume_L"]["type"])
+            up_vol_unit = st.selectbox("Upstream volume units", ["L","mL","uL"], index=["L","mL","uL"].index(st.session_state.upstream_cfg["volume_L"].get("units","L")), key="up_vol_unit")
+            st.session_state.upstream_cfg["volume_L"]["units"] = up_vol_unit
 
     st.subheader("Unit Operations")
     c1, c2 = st.columns([1,3])
@@ -139,17 +143,21 @@ if mode == "Builder (no file)":
             else:
                 vm.pop("concentration_factor", None)
 
-            use_add = st.checkbox("Dilution addition (L)", key=f"op_{i}_use_add", value=("dilution_addition_L" in vm))
+            use_add = st.checkbox("Dilution addition", key=f"op_{i}_use_add", value=("dilution_addition" in vm) or ("dilution_addition_L" in vm))
             if use_add:
-                vm["dilution_addition_L"] = dist_editor(f"op_{i}_add","Dilution addition (L)", default_type=vm.get("dilution_addition_L",{"type":"fixed"}).get("type","fixed"))
-            else:
+                vm["dilution_addition"] = dist_editor(f"op_{i}_add","Dilution addition")
+                vm["dilution_addition"]["units"] = st.selectbox("Units for dilution addition", ["L","mL","uL"], index=0, key=f"op_{i}_add_units")
                 vm.pop("dilution_addition_L", None)
-
-            use_tgt = st.checkbox("Target volume (L) — overrides the above", key=f"op_{i}_use_tgt", value=("target_volume_L_dist" in vm))
-            if use_tgt:
-                vm["target_volume_L_dist"] = dist_editor(f"op_{i}_tgt","Target volume (L)", default_type=vm.get("target_volume_L_dist",{"type":"fixed"}).get("type","fixed"))
             else:
+                vm.pop("dilution_addition", None); vm.pop("dilution_addition_L", None)
+
+            use_tgt = st.checkbox("Target volume — overrides the above", key=f"op_{i}_use_tgt", value=("target_volume" in vm) or ("target_volume_L_dist" in vm))
+            if use_tgt:
+                vm["target_volume"] = dist_editor(f"op_{i}_tgt","Target volume")
+                vm["target_volume"]["units"] = st.selectbox("Units for target volume", ["L","mL","uL"], index=0, key=f"op_{i}_tgt_units")
                 vm.pop("target_volume_L_dist", None)
+            else:
+                vm.pop("target_volume", None); vm.pop("target_volume_L_dist", None)
 
             op["volume_model"] = vm
 
@@ -179,7 +187,9 @@ def load_config_from_obj(obj: Dict[str, Any]) -> ProcessConfig:
         vm = VolumeModel(
             concentration_factor = op.get("volume_model",{}).get("concentration_factor"),
             dilution_addition_L  = op.get("volume_model",{}).get("dilution_addition_L"),
+            dilution_addition    = op.get("volume_model",{}).get("dilution_addition"),
             target_volume_L_dist = op.get("volume_model",{}).get("target_volume_L_dist"),
+            target_volume        = op.get("volume_model",{}).get("target_volume"),
         )
         ops.append(UnitOperation(name=op["name"], yield_dist=op["yield"], volume_model=vm))
     return ProcessConfig(upstream_titer_dist=upstream_titer, upstream_volume_L_dist=upstream_vol, unit_operations=ops)
@@ -203,11 +213,51 @@ if run:
         tmp = df.copy(); tmp.insert(0, "step", step)
         all_stats.append(tmp.reset_index().rename(columns={"index":"metric"}))
     stats_table = pd.concat(all_stats, ignore_index=True)
-    csv_buf2 = io.StringIO(); stats_table.to_csv(csv_buf2, index=False)
-    st.download_button("Download summary stats (CSV)", data=csv_buf2.getvalue(), file_name="summary_stats.csv", mime="text/csv")
+
+    def _fmt_sci(x):
+        try:
+            return f"{float(x):.3e}"
+        except Exception:
+            return x
+    sci_cols = ["titer_vg_per_mL","genomes_vg"]
+    display_stats = stats_table.copy()
+    mask = display_stats["metric"].isin(sci_cols)
+    num_cols = ["mean","sd","min","p5","p25","median","p75","p95","max"]
+    display_stats.loc[mask, num_cols] = display_stats.loc[mask, num_cols].applymap(_fmt_sci)
 
     st.subheader("Summary statistics")
-    st.dataframe(stats_table, use_container_width=True)
+    st.dataframe(display_stats, use_container_width=True)
+
+    st.markdown("### Chart bounds / regions")
+    bound_mode = st.radio(
+        "How do you want to define bounds?",
+        ["Central %", "± k·SD around mean", "Manual bounds"],
+        horizontal=True,
+    )
+    central_pct = st.slider("Central percent", 50, 99, 68, step=1, help="E.g., 68% ≈ 1 SD for Normal")
+    k_sd = st.slider("k (SDs)", 0.1, 3.0, 1.0, step=0.1)
+    manual_low = st.text_input("Manual lower bound (number, scientific ok, e.g. 1e11)", value="")
+    manual_high = st.text_input("Manual upper bound (number, scientific ok, e.g. 9e11)", value="")
+
+    def _compute_bounds(series: pd.Series):
+        s = series.replace([np.inf, -np.inf], np.nan).dropna().to_numpy()
+        if s.size == 0:
+            return (None, None)
+        if bound_mode == "Central %":
+            alpha = (100 - central_pct) / 2
+            lo = float(np.percentile(s, alpha))
+            hi = float(np.percentile(s, 100 - alpha))
+            return lo, hi
+        elif bound_mode == "± k·SD around mean":
+            m = float(np.mean(s)); sd = float(np.std(s, ddof=1)) if s.size > 1 else 0.0
+            return m - k_sd*sd, m + k_sd*sd
+        else:
+            try:
+                lo = float(eval(manual_low)) if manual_low.strip() else None
+                hi = float(eval(manual_high)) if manual_high.strip() else None
+                return lo, hi
+            except Exception:
+                return (None, None)
 
     st.subheader("Distributions by step")
     metrics = ["titer_vg_per_mL", "volume_L", "genomes_vg"]
@@ -216,13 +266,42 @@ if run:
         df = results_long[results_long["step"] == step].copy()
         for metric in metrics:
             st.markdown(f"**{metric}**")
-            chart = alt.Chart(df).transform_density(metric, as_=[metric, 'density']).mark_area(opacity=0.5).encode(
-                x=alt.X(f"{metric}:Q", title=metric), y='density:Q'
-            )
+
+            axis_fmt = alt.Axis(format=".2e") if metric in ["titer_vg_per_mL","genomes_vg"] else alt.Axis()
+
             hist = alt.Chart(df).mark_bar(opacity=0.5).encode(
-                x=alt.X(f"{metric}:Q", bin=alt.Bin(maxbins=50), title=metric), y=alt.Y('count()', title='count')
+                x=alt.X(f"{metric}:Q", bin=alt.Bin(maxbins=50), title=metric, axis=axis_fmt),
+                y=alt.Y('count()', title='count')
             )
-            st.altair_chart((hist & chart).resolve_scale(y='independent'), use_container_width=True)
+
+            kde = alt.Chart(df).transform_density(
+                metric, as_=[metric, 'density'],
+            ).mark_area(opacity=0.4).encode(
+                x=alt.X(f"{metric}:Q", title=metric, axis=axis_fmt),
+                y='density:Q'
+            )
+
+            mean_val = float(df[metric].mean())
+            mean_rule = alt.Chart(pd.DataFrame({"x":[mean_val]})).mark_rule().encode(x='x:Q')
+
+            lo, hi = _compute_bounds(df[metric])
+            layers = [hist, kde, mean_rule]
+            if lo is not None:
+                lo_rule = alt.Chart(pd.DataFrame({"x":[lo]})).mark_rule(strokeDash=[4,4]).encode(x='x:Q')
+                layers.append(lo_rule)
+            if hi is not None:
+                hi_rule = alt.Chart(pd.DataFrame({"x":[hi]})).mark_rule(strokeDash=[4,4]).encode(x='x:Q')
+                layers.append(hi_rule)
+            if (lo is not None) and (hi is not None) and (hi > lo):
+                band = alt.Chart(pd.DataFrame({"x":[lo], "x2":[hi]})).mark_rect(opacity=0.08).encode(
+                    x='x:Q', x2='x2:Q'
+                )
+                layers.append(band)
+
+            st.altair_chart(alt.layer(*layers).resolve_scale(y='independent'), use_container_width=True)
+
+            to_sci = (lambda v: f"{v:.3e}") if metric in ["titer_vg_per_mL","genomes_vg"] else (lambda v: f"{v:.3g}")
+            st.caption(f"mean = {to_sci(mean_val)}  |  bounds: [{to_sci(lo) if lo is not None else '—'}, {to_sci(hi) if hi is not None else '—'}]")
 
     st.subheader("Compounding relationship")
     st.markdown("""

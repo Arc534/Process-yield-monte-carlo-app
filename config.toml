@@ -1,0 +1,8 @@
+[theme]
+base="light"
+
+[server]
+enableXsrfProtection=true
+address = "0.0.0.0"
+headless = true
+port = 8501

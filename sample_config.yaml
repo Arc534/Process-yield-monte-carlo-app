@@ -7,6 +7,7 @@ upstream:
     type: uniform
     low: 190
     high: 210
+    units: L
 unit_operations:
 - name: Harvest
   yield:
@@ -18,9 +19,10 @@ unit_operations:
     concentration_factor:
       type: fixed
       value: 1.0
-    dilution_addition_L:
+    dilution_addition:
       type: fixed
       value: 0.0
+      units: L
 - name: Clarification
   yield:
     type: triangular
@@ -53,10 +55,11 @@ unit_operations:
       type: uniform
       low: 5.0
       high: 12.0
-    dilution_addition_L:
+    dilution_addition:
       type: uniform
       low: 0.0
       high: 10.0
+      units: L
 - name: Final Formulation
   yield:
     type: triangular
@@ -64,7 +67,8 @@ unit_operations:
     mode: 0.96
     high: 0.99
   volume_model:
-    target_volume_L_dist:
+    target_volume:
       type: uniform
       low: 4.0
       high: 6.0
+      units: L

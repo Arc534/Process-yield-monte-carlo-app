@@ -4,6 +4,17 @@ import pandas as pd
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 
+UNIT_TO_L = {"L": 1.0, "mL": 1e-3, "uL": 1e-6}
+
+def _as_liters(samples: np.ndarray, unit: Optional[str]) -> np.ndarray:
+    if unit is None:
+        unit = "L"
+    factor = UNIT_TO_L.get(unit, 1.0)
+    return samples * factor
+
+def _units_from_spec(spec: Dict[str, Any]) -> Optional[str]:
+    return spec.get("units")
+
 def sample_distribution(spec: Dict[str, Any], n: int, rng: np.random.Generator, empirical_data: Optional[pd.Series]=None) -> np.ndarray:
     dtype = spec.get("type", "fixed").lower()
     if dtype == "fixed":
@@ -27,6 +38,9 @@ def sample_distribution(spec: Dict[str, Any], n: int, rng: np.random.Generator, 
     elif dtype == "triangular":
         left = float(spec["low"]); mode = float(spec["mode"]); right = float(spec["high"])
         return rng.triangular(left, mode, right, size=n)
+    elif dtype == "beta":
+        a = float(spec["alpha"]); b = float(spec["beta"])
+        return rng.beta(a, b, size=n)
     elif dtype == "empirical":
         if empirical_data is None or len(empirical_data) == 0:
             raise ValueError("Empirical distribution specified but no empirical data provided.")
@@ -38,7 +52,9 @@ def sample_distribution(spec: Dict[str, Any], n: int, rng: np.random.Generator, 
 class VolumeModel:
     concentration_factor: Optional[Dict[str, Any]] = None
     dilution_addition_L: Optional[Dict[str, Any]] = None
+    dilution_addition: Optional[Dict[str, Any]] = None
     target_volume_L_dist: Optional[Dict[str, Any]] = None
+    target_volume: Optional[Dict[str, Any]] = None
 
 @dataclass
 class UnitOperation:
@@ -57,7 +73,9 @@ def simulate(config: ProcessConfig, n_iter: int=10000, seed: Optional[int]=42,
     rng = np.random.default_rng(seed)
 
     titer0 = sample_distribution(config.upstream_titer_dist, n_iter, rng, _maybe_empirical(config.upstream_titer_dist, empirical_inputs))
-    vol0_L = sample_distribution(config.upstream_volume_L_dist, n_iter, rng, _maybe_empirical(config.upstream_volume_L_dist, empirical_inputs))
+    vol0_spec = config.upstream_volume_L_dist
+    vol0_raw = sample_distribution(vol0_spec, n_iter, rng, _maybe_empirical(vol0_spec, empirical_inputs))
+    vol0_L = _as_liters(vol0_raw, _units_from_spec(vol0_spec))
     vol0_mL = vol0_L * 1000.0
     genomes0 = titer0 * vol0_mL
 
@@ -68,19 +86,28 @@ def simulate(config: ProcessConfig, n_iter: int=10000, seed: Optional[int]=42,
 
     for op in config.unit_operations:
         y = sample_distribution(op.yield_dist, n_iter, rng, _maybe_empirical(op.yield_dist, empirical_inputs))
+        y = np.clip(y, 0.0, 1.0)
         genomes_i = genomes[-1] * y
 
         vol_in_L = volume_L[-1]
+
         if op.volume_model.concentration_factor is not None:
-            cf = sample_distribution(op.volume_model.concentration_factor, n_iter, rng, _maybe_empirical(op.volume_model.concentration_factor, empirical_inputs))
+            cf_spec = op.volume_model.concentration_factor
+            cf = sample_distribution(cf_spec, n_iter, rng, _maybe_empirical(cf_spec, empirical_inputs))
             cf = np.where(cf < 1.0, 1.0, cf)
             vol_in_L = vol_in_L / cf
-        if op.volume_model.dilution_addition_L is not None:
-            addL = sample_distribution(op.volume_model.dilution_addition_L, n_iter, rng, _maybe_empirical(op.volume_model.dilution_addition_L, empirical_inputs))
-            vol_in_L = vol_in_L + addL
-        if op.volume_model.target_volume_L_dist is not None:
-            tgt = sample_distribution(op.volume_model.target_volume_L_dist, n_iter, rng, _maybe_empirical(op.volume_model.target_volume_L_dist, empirical_inputs))
-            vol_in_L = tgt
+
+        add_spec = op.volume_model.dilution_addition or op.volume_model.dilution_addition_L
+        if add_spec is not None:
+            add_raw = sample_distribution(add_spec, n_iter, rng, _maybe_empirical(add_spec, empirical_inputs))
+            unit = _units_from_spec(add_spec) or ("L" if op.volume_model.dilution_addition_L is not None else None)
+            vol_in_L = vol_in_L + _as_liters(add_raw, unit)
+
+        tgt_spec = op.volume_model.target_volume or op.volume_model.target_volume_L_dist
+        if tgt_spec is not None:
+            tgt_raw = sample_distribution(tgt_spec, n_iter, rng, _maybe_empirical(tgt_spec, empirical_inputs))
+            unit = _units_from_spec(tgt_spec) or ("L" if op.volume_model.target_volume_L_dist is not None else None)
+            vol_in_L = _as_liters(tgt_raw, unit)
 
         vol_mL = vol_in_L * 1000.0
         titer_i = np.where(vol_mL > 0, genomes_i / vol_mL, np.nan)
@@ -106,9 +133,9 @@ def _maybe_empirical(spec: Dict[str, Any], empirical_inputs: Optional[Dict[str, 
     if spec and spec.get("type","").lower() == "empirical":
         key = spec.get("key")
         if not key:
-            raise ValueError("Empirical distribution requires a 'key' to find its uploaded data column.")
+            raise ValueError("Empirical distribution requires a 'key'.")
         if empirical_inputs is None or key not in empirical_inputs:
-            raise ValueError(f"Empirical data for key '{key}' not found in uploaded empirical_inputs.")
+            raise ValueError(f"Empirical data for key '{key}' not found.")
         return empirical_inputs[key]
     return None
 
