@@ -87,10 +87,37 @@ def dist_editor(prefix: str, label: str, existing: Dict[str, Any] | None = None,
             spec["key"] = st.text_input("Empirical column key", key=f"{prefix}_emp_key",
                                         value=spec_in.get("key", f"{prefix}_data"))
         elif dtype == "beta":
-            spec["alpha"] = cols[0].number_input("Alpha", key=f"{prefix}_beta_a",
-                                                 value=_num(spec_in, "alpha", 31.5), format="%.6g", min_value=0.001)
-            spec["beta"]  = cols[1].number_input("Beta",  key=f"{prefix}_beta_b",
-                                                 value=_num(spec_in, "beta", 3.5), format="%.6g", min_value=0.001)
+            beta_mode = st.radio("Parameterization", ["Alpha/Beta","Mean/SD"], key=f"{prefix}_beta_mode", horizontal=True)
+            if beta_mode == "Alpha/Beta":
+                spec["alpha"] = cols[0].number_input("Alpha", key=f"{prefix}_beta_a",
+                                                     value=_num(spec_in, "alpha", 31.5), format="%.6g", min_value=1e-6)
+                spec["beta"]  = cols[1].number_input("Beta",  key=f"{prefix}_beta_b",
+                                                     value=_num(spec_in, "beta", 3.5), format="%.6g", min_value=1e-6)
+            else:
+                m = cols[0].number_input("Mean (0–1)", key=f"{prefix}_beta_m",
+                                         value=_num(spec_in, "mean_mom", 0.95), min_value=1e-9, max_value=1-1e-9, format="%.6g")
+                sd = cols[1].number_input("SD (0–≈0.5)", key=f"{prefix}_beta_sd",
+                                          value=_num(spec_in, "sd_mom", 0.03), min_value=1e-9, max_value=0.5, format="%.6g")
+                # Method-of-moments: var = m*(1-m)/(a+b+1); a=m*s; b=(1-m)*s; s=(m*(1-m)/v)-1
+                v = sd**2
+                max_var = m*(1-m)  # theoretical max at a=b=1 (actually max variance at a=b=0.5 => var=1/8; but bounded by m(1-m))
+                # Guard: variance must be < m*(1-m)
+                if v >= m*(1-m):
+                    st.error("Invalid mean/SD for Beta: variance must be < m*(1-m). Reduce SD or adjust mean.")
+                    # Fall back to a safe tiny adjustment
+                    v = (m*(1-m)) * 0.999
+                s_param = (m*(1-m)/v) - 1.0
+                alpha = m * s_param
+                beta  = (1.0 - m) * s_param
+                # Clamp tiny negatives due to floating point
+                alpha = max(alpha, 1e-6)
+                beta  = max(beta, 1e-6)
+                spec["alpha"] = alpha
+                spec["beta"]  = beta
+                # save the MOM inputs so they prefill next time
+                spec["mean_mom"] = m
+                spec["sd_mom"] = sd
+                st.caption(f"Derived: alpha = {alpha:.4g}, beta = {beta:.4g}")
         return spec
 
 with st.sidebar:
