@@ -1,3 +1,4 @@
+
 import json
 import io
 from typing import Dict, Any
@@ -10,8 +11,8 @@ import yaml
 
 from sim_core import ProcessConfig, UnitOperation, VolumeModel, simulate
 
-st.set_page_config(page_title="Monte Carlo Simulator for AAV Process", layout="wide")
-st.title("Monte Carlo Simulator for AAV Process")
+st.set_page_config(page_title="AAV Monte Carlo Simulator", layout="wide")
+st.title("AAV Monte Carlo Simulator")
 
 # --- Simple password gate ---
 def _check_password():
@@ -28,41 +29,69 @@ def _check_password():
 _check_password()
 # --- End password gate ---
 
-def dist_editor(prefix: str, label: str, default_type: str = "fixed") -> Dict[str, Any]:
+# ----- Helpers -----
+def _num(spec, key, default):
+    try:
+        return float(spec.get(key, default))
+    except Exception:
+        return default
+
+def dist_editor(prefix: str, label: str, existing: Dict[str, Any] | None = None, default_type: str = "fixed") -> Dict[str, Any]:
+    """Distribution editor that PREFILLS from existing spec."""
+    spec_in = existing or {}
     with st.container(border=True):
         st.caption(label)
         opts = ["fixed","normal","lognormal","uniform","triangular","empirical","beta"]
+        dtype_default = spec_in.get("type", default_type)
         dtype = st.selectbox(f"{label} — distribution type", opts,
                              key=f"{prefix}_dtype",
-                             index=opts.index(default_type) if default_type in opts else 0)
+                             index=opts.index(dtype_default) if dtype_default in opts else 0)
         spec: Dict[str, Any] = {"type": dtype}
         cols = st.columns(3)
         if dtype == "fixed":
-            spec["value"] = cols[0].number_input("Value", key=f"{prefix}_fixed_val", value=1.0, format="%.6g")
+            spec["value"] = cols[0].number_input("Value", key=f"{prefix}_fixed_val",
+                                                 value=_num(spec_in, "value", 1.0), format="%.6g")
         elif dtype == "normal":
-            spec["mean"] = cols[0].number_input("Mean", key=f"{prefix}_norm_mean", value=1.0, format="%.6g")
-            spec["sd"]   = cols[1].number_input("SD", key=f"{prefix}_norm_sd", value=0.1, format="%.6g", min_value=0.0)
+            spec["mean"] = cols[0].number_input("Mean", key=f"{prefix}_norm_mean",
+                                                value=_num(spec_in, "mean", 1.0), format="%.6g")
+            spec["sd"]   = cols[1].number_input("SD", key=f"{prefix}_norm_sd",
+                                                value=_num(spec_in, "sd", 0.1), format="%.6g", min_value=0.0)
         elif dtype == "lognormal":
-            mode = st.radio("Parameterization", ["Natural-space mean/sd","Log-space mu/sigma"], key=f"{prefix}_ln_mode", horizontal=True)
+            mode = st.radio("Parameterization", ["Natural-space mean/sd","Log-space mu/sigma"],
+                            key=f"{prefix}_ln_mode",
+                            horizontal=True,
+                            index=0 if ("mean" in spec_in or "sd" in spec_in) else 1)
             if mode == "Natural-space mean/sd":
-                spec["mean"] = cols[0].number_input("Mean (natural)", key=f"{prefix}_ln_mean", value=1.0, format="%.6g", min_value=1e-12)
-                spec["sd"]   = cols[1].number_input("SD (natural)", key=f"{prefix}_ln_sd", value=0.1, format="%.6g", min_value=1e-12)
+                spec["mean"] = cols[0].number_input("Mean (natural)", key=f"{prefix}_ln_mean",
+                                                    value=_num(spec_in, "mean", 1.0), format="%.6g", min_value=1e-12)
+                spec["sd"]   = cols[1].number_input("SD (natural)", key=f"{prefix}_ln_sd",
+                                                    value=_num(spec_in, "sd", 0.1), format="%.6g", min_value=1e-12)
             else:
-                spec["mu_log"]    = cols[0].number_input("mu_log", key=f"{prefix}_ln_mu", value=0.0, format="%.6g")
-                spec["sigma_log"] = cols[1].number_input("sigma_log", key=f"{prefix}_ln_sigma", value=0.25, format="%.6g", min_value=1e-6)
+                spec["mu_log"]    = cols[0].number_input("mu_log", key=f"{prefix}_ln_mu",
+                                                         value=_num(spec_in, "mu_log", 0.0), format="%.6g")
+                spec["sigma_log"] = cols[1].number_input("sigma_log", key=f"{prefix}_ln_sigma",
+                                                         value=_num(spec_in, "sigma_log", 0.25), format="%.6g", min_value=1e-6)
         elif dtype == "uniform":
-            spec["low"]  = cols[0].number_input("Low", key=f"{prefix}_uni_low", value=0.8, format="%.6g")
-            spec["high"] = cols[1].number_input("High", key=f"{prefix}_uni_high", value=1.0, format="%.6g")
+            spec["low"]  = cols[0].number_input("Low", key=f"{prefix}_uni_low",
+                                                value=_num(spec_in, "low", 0.8), format="%.6g")
+            spec["high"] = cols[1].number_input("High", key=f"{prefix}_uni_high",
+                                                value=_num(spec_in, "high", 1.0), format="%.6g")
         elif dtype == "triangular":
-            spec["low"]  = cols[0].number_input("Low", key=f"{prefix}_tri_low", value=0.8, format="%.6g")
-            spec["mode"] = cols[1].number_input("Mode", key=f"{prefix}_tri_mode", value=0.9, format="%.6g")
-            spec["high"] = cols[2].number_input("High", key=f"{prefix}_tri_high", value=0.97, format="%.6g")
+            spec["low"]  = cols[0].number_input("Low", key=f"{prefix}_tri_low",
+                                                value=_num(spec_in, "low", 0.8), format="%.6g")
+            spec["mode"] = cols[1].number_input("Mode", key=f"{prefix}_tri_mode",
+                                                value=_num(spec_in, "mode", 0.9), format="%.6g")
+            spec["high"] = cols[2].number_input("High", key=f"{prefix}_tri_high",
+                                                value=_num(spec_in, "high", 0.97), format="%.6g")
         elif dtype == "empirical":
             st.info("Provide a CSV under 'Empirical Inputs' with a column name matching this key.")
-            spec["key"] = st.text_input("Empirical column key", key=f"{prefix}_emp_key", value=f"{prefix}_data")
+            spec["key"] = st.text_input("Empirical column key", key=f"{prefix}_emp_key",
+                                        value=spec_in.get("key", f"{prefix}_data"))
         elif dtype == "beta":
-            spec["alpha"] = cols[0].number_input("Alpha", key=f"{prefix}_beta_a", value=31.5, format="%.6g", min_value=0.001)
-            spec["beta"]  = cols[1].number_input("Beta",  key=f"{prefix}_beta_b", value=3.5, format="%.6g", min_value=0.001)
+            spec["alpha"] = cols[0].number_input("Alpha", key=f"{prefix}_beta_a",
+                                                 value=_num(spec_in, "alpha", 31.5), format="%.6g", min_value=0.001)
+            spec["beta"]  = cols[1].number_input("Beta",  key=f"{prefix}_beta_b",
+                                                 value=_num(spec_in, "beta", 3.5), format="%.6g", min_value=0.001)
         return spec
 
 with st.sidebar:
@@ -83,6 +112,7 @@ if empirical_file is not None:
     empirical_inputs = {col: emp_df[col].dropna() for col in emp_df.columns}
     st.sidebar.success(f"Empirical data loaded: {list(emp_df.columns)}")
 
+# ---- Session defaults ----
 if "ops" not in st.session_state:
     st.session_state.ops = []
 if "upstream_cfg" not in st.session_state:
@@ -90,6 +120,9 @@ if "upstream_cfg" not in st.session_state:
         "titer_vg_per_mL": {"type":"lognormal","mean":2.0e11,"sd":5.0e10},
         "volume_L": {"type":"fixed","value":450.0, "units":"L"}
     }
+# result holders
+for k in ("results_long","stats_per_step","yields_map"):
+    st.session_state.setdefault(k, None)
 
 def add_op():
     st.session_state.ops.append({
@@ -105,17 +138,24 @@ def remove_op(idx: int):
 def to_config_dict():
     return {"upstream": st.session_state.upstream_cfg, "unit_operations": st.session_state.ops}
 
+# ---- Builder / Upload ----
 if mode == "Builder (no file)":
     st.subheader("Upstream Inputs")
     with st.container(border=True):
         cols = st.columns(2)
         with cols[0]:
             st.markdown("**Upstream titer (vg/mL)**")
-            st.session_state.upstream_cfg["titer_vg_per_mL"] = dist_editor("up_titer","Upstream titer", default_type=st.session_state.upstream_cfg["titer_vg_per_mL"]["type"])
+            st.session_state.upstream_cfg["titer_vg_per_mL"] = dist_editor("up_titer","Upstream titer",
+                                                                            existing=st.session_state.upstream_cfg["titer_vg_per_mL"],
+                                                                            default_type="lognormal")
         with cols[1]:
             st.markdown("**Upstream volume**")
-            st.session_state.upstream_cfg["volume_L"] = dist_editor("up_vol","Upstream volume", default_type=st.session_state.upstream_cfg["volume_L"]["type"])
-            up_vol_unit = st.selectbox("Upstream volume units", ["L","mL","uL"], index=["L","mL","uL"].index(st.session_state.upstream_cfg["volume_L"].get("units","L")), key="up_vol_unit")
+            st.session_state.upstream_cfg["volume_L"] = dist_editor("up_vol","Upstream volume",
+                                                                    existing=st.session_state.upstream_cfg["volume_L"],
+                                                                    default_type="fixed")
+            up_vol_unit = st.selectbox("Upstream volume units", ["L","mL","uL"],
+                                       index=["L","mL","uL"].index(st.session_state.upstream_cfg["volume_L"].get("units","L")),
+                                       key="up_vol_unit")
             st.session_state.upstream_cfg["volume_L"]["units"] = up_vol_unit
 
     st.subheader("Unit Operations")
@@ -131,20 +171,24 @@ if mode == "Builder (no file)":
         with st.expander(f"{i+1}. {op['name']}", expanded=True):
             op["name"] = st.text_input("Name", value=op["name"], key=f"op_{i}_name")
             st.markdown("**Yield (fractional recovery 0–1)**")
-            op["yield"] = dist_editor(f"op_{i}_yield", f"{op['name']} — Yield", default_type=op["yield"]["type"])
+            op["yield"] = dist_editor(f"op_{i}_yield", f"{op['name']} — Yield",
+                                      existing=op["yield"], default_type="beta")
 
             st.markdown("**Volume model (choose any that apply)**")
             vm = op.get("volume_model",{})
 
             use_cf = st.checkbox("Concentration factor (>=1)", key=f"op_{i}_use_cf", value=("concentration_factor" in vm))
             if use_cf:
-                vm["concentration_factor"] = dist_editor(f"op_{i}_cf","Concentration factor", default_type=vm.get("concentration_factor",{"type":"fixed"}).get("type","fixed"))
+                vm["concentration_factor"] = dist_editor(f"op_{i}_cf","Concentration factor",
+                                                         existing=vm.get("concentration_factor"),
+                                                         default_type="fixed")
             else:
                 vm.pop("concentration_factor", None)
 
             use_add = st.checkbox("Dilution addition", key=f"op_{i}_use_add", value=("dilution_addition" in vm) or ("dilution_addition_L" in vm))
             if use_add:
-                vm["dilution_addition"] = dist_editor(f"op_{i}_add","Dilution addition")
+                vm["dilution_addition"] = dist_editor(f"op_{i}_add","Dilution addition",
+                                                      existing=vm.get("dilution_addition") or vm.get("dilution_addition_L"))
                 vm["dilution_addition"]["units"] = st.selectbox("Units for dilution addition", ["L","mL","uL"], index=0, key=f"op_{i}_add_units")
                 vm.pop("dilution_addition_L", None)
             else:
@@ -152,7 +196,8 @@ if mode == "Builder (no file)":
 
             use_tgt = st.checkbox("Target volume — overrides the above", key=f"op_{i}_use_tgt", value=("target_volume" in vm) or ("target_volume_L_dist" in vm))
             if use_tgt:
-                vm["target_volume"] = dist_editor(f"op_{i}_tgt","Target volume")
+                vm["target_volume"] = dist_editor(f"op_{i}_tgt","Target volume",
+                                                  existing=vm.get("target_volume") or vm.get("target_volume_L_dist"))
                 vm["target_volume"]["units"] = st.selectbox("Units for target volume", ["L","mL","uL"], index=0, key=f"op_{i}_tgt_units")
                 vm.pop("target_volume_L_dist", None)
             else:
@@ -168,42 +213,66 @@ else:
     st.subheader("Upload a YAML/JSON config")
     cfg_file = st.file_uploader("Process Config (YAML or JSON)", type=["yaml","yml","json"], key="cfg_file_upload")
     if cfg_file is None:
-        st.info("No file uploaded yet."); st.stop()
-    content = cfg_file.read()
+        st.info("No file uploaded yet.")
+    else:
+        content = cfg_file.read()
+        try:
+            if cfg_file.name.lower().endswith((".yaml",".yml")):
+                cfg_dict = yaml.safe_load(content)
+            else:
+                cfg_dict = json.loads(content)
+            # Load into session-state to EDIT after upload
+            st.session_state.upstream_cfg = cfg_dict["upstream"]
+            st.session_state.ops = cfg_dict["unit_operations"]
+            st.success("Config loaded into Builder. You can tweak and run.")
+        except Exception as e:
+            st.error(f"Failed to parse config: {e}")
+
+# ---- Run / Preserve results ----
+c_run, c_clear = st.columns([1,1])
+run_clicked = c_run.button("Run Simulation", type="primary", key="run_btn")
+clear_clicked = c_clear.button("Clear results", key="clear_btn")
+
+if clear_clicked:
+    st.session_state["results_long"] = None
+    st.session_state["stats_per_step"] = None
+    st.session_state["yields_map"] = None
+
+if run_clicked:
     try:
-        if cfg_file.name.lower().endswith((".yaml",".yml")):
-            cfg_dict = yaml.safe_load(content)
-        else:
-            cfg_dict = json.loads(content)
+        proc_cfg = _build_config = None
+        # Build ProcessConfig from current session config
+        upstream_titer = st.session_state.upstream_cfg["titer_vg_per_mL"]
+        upstream_vol = st.session_state.upstream_cfg["volume_L"]
+        ops_objs = []
+        for op in st.session_state.ops:
+            vm = VolumeModel(
+                concentration_factor = op.get("volume_model",{}).get("concentration_factor"),
+                dilution_addition_L  = op.get("volume_model",{}).get("dilution_addition_L"),
+                dilution_addition    = op.get("volume_model",{}).get("dilution_addition"),
+                target_volume_L_dist = op.get("volume_model",{}).get("target_volume_L_dist"),
+                target_volume        = op.get("volume_model",{}).get("target_volume"),
+            )
+            ops_objs.append(UnitOperation(name=op["name"], yield_dist=op["yield"], volume_model=vm))
+        proc_cfg = ProcessConfig(upstream_titer_dist=upstream_titer, upstream_volume_L_dist=upstream_vol, unit_operations=ops_objs)
+
+        with st.spinner("Simulating..."):
+            results_long, stats_per_step, yields_map = simulate(proc_cfg, n_iter=int(st.session_state.get("n_iter", 20000) or 20000),
+                                                                seed=int(st.session_state.get("seed", 42) or 42),
+                                                                empirical_inputs=None)
+        st.session_state["results_long"] = results_long
+        st.session_state["stats_per_step"] = stats_per_step
+        st.session_state["yields_map"] = yields_map
+        st.success("Done! Results are cached — you can change visualization controls without re-running.")
     except Exception as e:
-        st.error(f"Failed to parse config: {e}"); st.stop()
+        st.error(f"Simulation error: {e}")
 
-def load_config_from_obj(obj: Dict[str, Any]) -> ProcessConfig:
-    upstream_titer = obj["upstream"]["titer_vg_per_mL"]
-    upstream_vol = obj["upstream"]["volume_L"]
-    ops = []
-    for op in obj["unit_operations"]:
-        vm = VolumeModel(
-            concentration_factor = op.get("volume_model",{}).get("concentration_factor"),
-            dilution_addition_L  = op.get("volume_model",{}).get("dilution_addition_L"),
-            dilution_addition    = op.get("volume_model",{}).get("dilution_addition"),
-            target_volume_L_dist = op.get("volume_model",{}).get("target_volume_L_dist"),
-            target_volume        = op.get("volume_model",{}).get("target_volume"),
-        )
-        ops.append(UnitOperation(name=op["name"], yield_dist=op["yield"], volume_model=vm))
-    return ProcessConfig(upstream_titer_dist=upstream_titer, upstream_volume_L_dist=upstream_vol, unit_operations=ops)
+# Use cached results if present
+results_long = st.session_state.get("results_long")
+stats_per_step = st.session_state.get("stats_per_step")
+yields_map = st.session_state.get("yields_map")
 
-try:
-    proc_cfg = load_config_from_obj(cfg_dict)
-except Exception as e:
-    st.error(f"Config error: {e}"); st.stop()
-
-run = st.button("Run Simulation", type="primary")
-if run:
-    with st.spinner("Simulating..."):
-        results_long, stats_per_step, yields_map = simulate(proc_cfg, n_iter=int(n_iter), seed=int(seed), empirical_inputs=empirical_inputs)
-    st.success("Done!")
-
+if results_long is not None and stats_per_step is not None:
     # Downloads (raw numeric)
     csv_buf = io.StringIO(); results_long.to_csv(csv_buf, index=False)
     st.download_button("Download raw samples (CSV)", data=csv_buf.getvalue(), file_name="samples.csv", mime="text/csv")
@@ -236,191 +305,94 @@ if run:
         "How do you want to define bounds?",
         ["Central %", "± k·SD around mean", "Manual bounds"],
         horizontal=True,
+        key="bounds_mode"
     )
-    central_pct = st.slider("Central percent", 50, 99, 68, step=1)
-    k_sd = st.slider("k (SDs)", 0.1, 3.0, 1.0, step=0.1)
-    manual_low = st.text_input("Manual lower bound (number, scientific ok, e.g. 1e11)", value="")
-    manual_high = st.text_input("Manual upper bound (number, scientific ok, e.g. 9e11)", value="")
+    central_pct = st.slider("Central percent", 50, 99, 68, step=1, key="central_pct")
+    k_sd = st.slider("k (SDs)", 0.1, 3.0, 1.0, step=0.1, key="k_sd")
+    manual_low = st.text_input("Manual lower bound (number, scientific ok, e.g. 1e11)", value="", key="manual_low")
+    manual_high = st.text_input("Manual upper bound (number, scientific ok, e.g. 9e11)", value="", key="manual_high")
+
+    def _parse_float(s):
+        try:
+            return float(s)
+        except Exception:
+            return None
 
     def _compute_bounds(series: pd.Series):
         s = series.replace([np.inf, -np.inf], np.nan).dropna().to_numpy()
         if s.size == 0:
             return (None, None)
-        if bound_mode == "Central %":
-            alpha = (100 - central_pct) / 2
+        if st.session_state["bounds_mode"] == "Central %":
+            alpha = (100 - st.session_state["central_pct"]) / 2
             lo = float(np.percentile(s, alpha))
             hi = float(np.percentile(s, 100 - alpha))
             return lo, hi
-        elif bound_mode == "± k·SD around mean":
+        elif st.session_state["bounds_mode"] == "± k·SD around mean":
             m = float(np.mean(s)); sd = float(np.std(s, ddof=1)) if s.size > 1 else 0.0
-            return m - k_sd*sd, m + k_sd*sd
+            return m - st.session_state["k_sd"]*sd, m + st.session_state["k_sd"]*sd
         else:
-            try:
-                lo = float(eval(manual_low)) if manual_low.strip() else None
-                hi = float(eval(manual_high)) if manual_high.strip() else None
-                return lo, hi
-            except Exception:
-                return (None, None)
+            lo = _parse_float(st.session_state["manual_low"])
+            hi = _parse_float(st.session_state["manual_high"])
+            return lo, hi
 
-    # ---- Visualizer Tab ----
+    # ---- Visualizer ----
     st.header("Visualizer")
-    metric = st.selectbox("Metric", ["titer_vg_per_mL","volume_L","genomes_vg","yield_frac"], index=0)
-    step = st.selectbox("Step", list(results_long["step"].unique()) + [s for s in yields_map.keys() if s not in set(results_long["step"].unique())])
-    view = st.selectbox("View", ["Histogram+KDE","CDF","Box"], index=0)
+    metric = st.selectbox("Metric", ["titer_vg_per_mL","volume_L","genomes_vg","yield_frac"], index=0, key="vis_metric")
 
-    # Build series for selected metric/step
+    steps_available = list(results_long["step"].unique())
     if metric == "yield_frac":
-        data_series = pd.Series(yields_map.get(step, np.full(len(results_long[results_long['step']==results_long['step'].iloc[0]]), np.nan)))
+        # exclude Upstream_Start (no yield)
+        steps_for_yield = [s for s in st.session_state["yields_map"].keys() if s != "Upstream_Start"]
+        step = st.selectbox("Step", steps_for_yield, key="vis_step")
+        data_series = pd.Series(st.session_state["yields_map"][step])
     else:
+        step = st.selectbox("Step", steps_available, key="vis_step")
         data_series = results_long.loc[results_long["step"]==step, metric]
 
-    # Parametric overlay/generator
-    st.subheader("Parametric fit / generator")
-    source_mode = st.radio("Source", ["Fit to simulated output","Generate from parametric family"], horizontal=True)
-    fam = st.selectbox("Family", ["normal","lognormal","gamma","beta"], index=1)
-    n_gen = st.number_input("N samples (for generate)", 1000, 200000, 20000, step=1000)
+    view = st.selectbox("View", ["Histogram+KDE","CDF","Box"], index=0, key="vis_view")
 
-    # Fit params from data
     s = data_series.replace([np.inf,-np.inf], np.nan).dropna().to_numpy()
-    fit_params = {}
-    if s.size > 1:
-        m = s.mean(); v = s.var(ddof=1); sd = s.std(ddof=1)
-        if fam == "normal":
-            fit_params = {"mean": float(m), "sd": float(sd)}
-        elif fam == "lognormal":
-            # method of moments in natural space
-            sigma2 = np.log(1 + (v / (m**2))) if m>0 and v>0 else 0.25
-            mu = np.log(m) - 0.5 * sigma2 if m>0 else 0.0
-            fit_params = {"mu_log": float(mu), "sigma_log": float(np.sqrt(sigma2))}
-        elif fam == "gamma":
-            if m>0 and v>0:
-                k = (m**2)/v
-                theta = v/m
-                fit_params = {"k": float(k), "theta": float(theta)}
-        elif fam == "beta":
-            # map data to (0,1) if it's yield; otherwise skip fit
-            xmin, xmax = s.min(), s.max()
-            if (xmin >= 0) and (xmax <= 1) and v>0:
-                tmp = (m*(1-m)/v) - 1
-                if tmp > 0:
-                    a = m*tmp; b = (1-m)*tmp
-                    fit_params = {"alpha": float(a), "beta": float(b)}
 
-    # Manual parameter inputs (with fitted defaults if available)
-    st.caption("Parameters")
-    if fam == "normal":
-        p_mean = st.number_input("mean", value=float(fit_params.get("mean", 0.0)))
-        p_sd   = st.number_input("sd", value=float(fit_params.get("sd", 1.0)), min_value=1e-12, format="%.6g")
-    elif fam == "lognormal":
-        p_mu = st.number_input("mu_log", value=float(fit_params.get("mu_log", 0.0)))
-        p_sigma = st.number_input("sigma_log", value=float(fit_params.get("sigma_log", 0.25)), min_value=1e-12, format="%.6g")
-    elif fam == "gamma":
-        p_k = st.number_input("k (shape)", value=float(fit_params.get("k", 2.0)), min_value=1e-12, format="%.6g")
-        p_theta = st.number_input("theta (scale)", value=float(fit_params.get("theta", 1.0)), min_value=1e-12, format="%.6g")
-    elif fam == "beta":
-        p_a = st.number_input("alpha", value=float(fit_params.get("alpha", 2.0)), min_value=1e-6, format="%.6g")
-        p_b = st.number_input("beta", value=float(fit_params.get("beta", 2.0)), min_value=1e-6, format="%.6g")
-
-    # Generate samples if needed
-    gen_samples = None
-    rng = np.random.default_rng(123)
-    if source_mode == "Generate from parametric family":
-        if fam == "normal":
-            gen_samples = rng.normal(p_mean, p_sd, size=int(n_gen))
-        elif fam == "lognormal":
-            gen_samples = rng.lognormal(p_mu, p_sigma, size=int(n_gen))
-        elif fam == "gamma":
-            gen_samples = rng.gamma(shape=p_k, scale=p_theta, size=int(n_gen))
-        elif fam == "beta":
-            gen_samples = rng.beta(p_a, p_b, size=int(n_gen))
-
-    # Helper for bounds
-    def get_bounds(arr):
-        if arr is None:
-            return (None, None)
-        arr = np.asarray(arr)
-        if arr.size == 0:
-            return (None, None)
-        if bound_mode == "Central %":
-            alpha = (100 - central_pct) / 2
-            return np.percentile(arr, alpha), np.percentile(arr, 100 - alpha)
-        elif bound_mode == "± k·SD around mean":
-            mu = arr.mean(); sd = arr.std(ddof=1) if arr.size > 1 else 0.0
-            return mu - k_sd*sd, mu + k_sd*sd
-        else:
-            try:
-                lo = float(eval(manual_low)) if manual_low.strip() else None
-                hi = float(eval(manual_high)) if manual_high.strip() else None
-                return lo, hi
-            except Exception:
-                return (None, None)
-
-    # Build a dataframe for visualization
-    df_vis = pd.DataFrame({"value": s})
-    if gen_samples is not None:
-        df_gen = pd.DataFrame({"value": gen_samples})
-    else:
-        df_gen = None
-
-    # Plot
     axis_fmt = alt.Axis(format=".2e") if metric in ["titer_vg_per_mL","genomes_vg"] else alt.Axis()
 
-    if view == "Histogram+KDE":
-        hist = alt.Chart(df_vis).mark_bar(opacity=0.5).encode(
+    if st.session_state["vis_view"] == "Histogram+KDE":
+        hist = alt.Chart(pd.DataFrame({"value": s})).mark_bar(opacity=0.5).encode(
             x=alt.X("value:Q", bin=alt.Bin(maxbins=50), axis=axis_fmt, title=metric),
-            y=alt.Y("count()", title="count"),
+            y=alt.Y("count()", title="count")
         )
-        kde = alt.Chart(df_vis).transform_density(
+        kde = alt.Chart(pd.DataFrame({"value": s})).transform_density(
             "value", as_=["value","density"]
         ).mark_area(opacity=0.4).encode(
             x=alt.X("value:Q", axis=axis_fmt, title=metric),
             y="density:Q"
         )
+        lo, hi = _compute_bounds(pd.Series(s))
         layers = [hist, kde]
-
-        # Overlay generated KDE if present
-        if df_gen is not None:
-            kde2 = alt.Chart(df_gen).transform_density(
-                "value", as_=["value","density"]
-            ).mark_line().encode(
-                x=alt.X("value:Q", axis=axis_fmt),
-                y="density:Q"
-            )
-            layers.append(kde2)
-
-        # Bounds
-        lo, hi = get_bounds(s)
         if lo is not None:
             layers.append(alt.Chart(pd.DataFrame({"x":[lo]})).mark_rule(strokeDash=[4,4]).encode(x="x:Q"))
         if hi is not None:
             layers.append(alt.Chart(pd.DataFrame({"x":[hi]})).mark_rule(strokeDash=[4,4]).encode(x="x:Q"))
         if (lo is not None) and (hi is not None) and (hi > lo):
             layers.append(alt.Chart(pd.DataFrame({"x":[lo], "x2":[hi]})).mark_rect(opacity=0.08).encode(x="x:Q", x2="x2:Q"))
-
         st.altair_chart(alt.layer(*layers).resolve_scale(y='independent'), use_container_width=True)
 
-    elif view == "CDF":
-        # Empirical CDF
+    elif st.session_state["vis_view"] == "CDF":
         xs = np.sort(s)
         ys = np.arange(1, len(xs)+1)/len(xs) if len(xs)>0 else np.array([])
-        df_cdf = pd.DataFrame({"x": xs, "F": ys})
-        chart = alt.Chart(df_cdf).mark_line().encode(
+        chart = alt.Chart(pd.DataFrame({"x": xs, "F": ys})).mark_line().encode(
             x=alt.X("x:Q", axis=axis_fmt, title=metric),
             y=alt.Y("F:Q", title="CDF")
         )
         st.altair_chart(chart, use_container_width=True)
 
-    else:  # Box
-        df_box = pd.DataFrame({"metric":[metric]*len(s), "value": s})
-        chart = alt.Chart(df_box).mark_boxplot().encode(
+    else:
+        chart = alt.Chart(pd.DataFrame({"metric":[metric]*len(s), "value": s})).mark_boxplot().encode(
             x=alt.X("metric:N", title=""),
             y=alt.Y("value:Q", axis=axis_fmt, title=metric)
         )
         st.altair_chart(chart, use_container_width=True)
 
-    # Download generated samples if any
-    if df_gen is not None:
-        buf = io.StringIO(); df_gen.to_csv(buf, index=False)
-        st.download_button("Download generated samples (CSV)", buf.getvalue(), file_name="generated_samples.csv", mime="text/csv")
+    st.caption(f"Step: {step}  |  Metric: {metric}  |  View: {st.session_state['vis_view']}")
 
-    st.caption(f"Step: {step}  |  Metric: {metric}  |  View: {view}")
+else:
+    st.info("No results yet. Configure your process and click **Run Simulation**. Results will persist while you explore visuals.")
