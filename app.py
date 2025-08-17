@@ -1,4 +1,3 @@
-
 import json
 import io
 from typing import Dict, Any
@@ -169,13 +168,13 @@ if mode == "Builder (no file)":
     with st.container(border=True):
         cols = st.columns(2)
         with cols[0]:
-            st.markdown("**Upstream titer (vg/mL)**")
-            st.session_state.upstream_cfg["titer_vg_per_mL"] = dist_editor("up_titer","Upstream titer",
+            st.markdown("**Post-Production titer (vg/mL)**")
+            st.session_state.upstream_cfg["titer_vg_per_mL"] = dist_editor("up_titer","Post-Production titer",
                                                                             existing=st.session_state.upstream_cfg["titer_vg_per_mL"],
                                                                             default_type="lognormal")
         with cols[1]:
-            st.markdown("**Upstream volume**")
-            st.session_state.upstream_cfg["volume_L"] = dist_editor("up_vol","Upstream volume",
+            st.markdown("**Post-Production Volume**")
+            st.session_state.upstream_cfg["volume_L"] = dist_editor("up_vol","Post-Production Volume",
                                                                     existing=st.session_state.upstream_cfg["volume_L"],
                                                                     default_type="fixed")
             up_vol_unit = st.selectbox("Upstream volume units", ["L","mL","uL"],
