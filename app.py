@@ -142,7 +142,7 @@ if "ops" not in st.session_state:
     st.session_state.ops = []
 if "upstream_cfg" not in st.session_state:
     st.session_state.upstream_cfg = {
-        "titer_vg_per_mL": {"type":"lognormal","mean":2.0e11,"sd":5.0e10},
+        "AAV titer (vg/mL)": {"type":"lognormal","mean":2.0e11,"sd":5.0e10},
         "volume_L": {"type":"fixed","value":450.0, "units":"L"}
     }
 for k in ("results_long","stats_per_step","yields_map"):
